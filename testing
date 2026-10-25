@@ -14637,5 +14637,223 @@ if canFile then
     end)
 end
 end)()
+------------------------------------------------------------------
+-- Load Model from Link (Creator Store / Marketplace)
+-- Lets the user paste a Roblox Creator Store / catalog model link,
+-- extracts the numeric asset ID, and loads the model locally via
+-- InsertService:LoadAsset (with a game:GetObjects fallback).
+-- The loaded model is purely visual: anchored, non-collidable, no
+-- scripts, placed a short distance in front of the player.
+------------------------------------------------------------------
+;(function()
+    local visualPanel = visualModules.panel
+    if not visualPanel then return end
 
+    -- Remove any leftover folder from a previous execution of the script.
+    local staleFolder = workspace:FindFirstChild("TrueSightLoadedModels")
+    if staleFolder then pcall(function() staleFolder:Destroy() end) end
+
+    local modelFolder = Instance.new("Folder")
+    modelFolder.Name = "TrueSightLoadedModels"
+    modelFolder.Parent = workspace
+
+    -- Extract the numeric asset ID from various Roblox URL formats.
+    local function extractAssetId(input)
+        if type(input) ~= "string" then return nil end
+        local trimmed = input:match("^%s*(.-)%s*$")
+        if trimmed == "" then return nil end
+
+        -- If it's just a raw number, return it.
+        if trimmed:match("^%d+$") then return trimmed end
+
+        -- Common Roblox URL patterns.
+        local id = trimmed:match("/store/asset/(%d+)")
+            or trimmed:match("/marketplace/asset/(%d+)")
+            or trimmed:match("/catalog/(%d+)")
+            or trimmed:match("/library/(%d+)")
+            or trimmed:match("asset/%?id=(%d+)")
+            or trimmed:match("asset%?id=(%d+)")
+            or trimmed:match("[?&]id=(%d+)")
+
+        if id then return id end
+        return nil
+    end
+
+    -- Try to load the model using InsertService:LoadAsset.
+    local function tryInsertService(assetId)
+        local ok, result = pcall(function()
+            local insertService = game:GetService("InsertService")
+            return insertService:LoadAsset(tonumber(assetId))
+        end)
+        if ok and result then return result end
+        return nil, result
+    end
+
+    -- Fallback using game:GetObjects() if InsertService is restricted.
+    local function tryGetObjects(assetId)
+        local ok, result = pcall(function()
+            return game:GetObjects("rbxassetid://" .. tostring(assetId))
+        end)
+        if ok and type(result) == "table" and #result > 0 then
+            return result[1]
+        end
+        return nil, result
+    end
+
+    -- Configure a loaded model for local, visual-only use.
+    local function prepareModel(modelInstance)
+        if not modelInstance then return nil end
+
+        local actualModel = modelInstance
+        if not modelInstance:IsA("Model") then
+            local firstModel = modelInstance:FindFirstChildWhichIsA("Model")
+            if firstModel then actualModel = firstModel end
+        end
+        if not actualModel or not actualModel:IsA("Model") then
+            return nil
+        end
+
+        -- Disable physics and strip executable scripts.
+        for _, descendant in ipairs(actualModel:GetDescendants()) do
+            if descendant:IsA("BasePart") then
+                descendant.Anchored = true
+                descendant.CanCollide = false
+                descendant.CanTouch = false
+                descendant.CanQuery = false
+                descendant.CastShadow = false
+            elseif descendant:IsA("Script") or descendant:IsA("LocalScript")
+                or descendant:IsA("ModuleScript") then
+                pcall(function() descendant:Destroy() end)
+            end
+        end
+        return actualModel
+    end
+
+    -- The module itself. Toggling off clears every loaded model.
+    local loadModelModule = addModule(visualPanel, "Load Model from Link", function(isEnabled)
+        if not isEnabled then
+            for _, child in ipairs(modelFolder:GetChildren()) do
+                child:Destroy()
+            end
+        end
+    end)
+
+    -- Text input for the model URL.
+    local linkInput = Instance.new("TextBox")
+    linkInput.Name = "ModelLinkInput"
+    linkInput.LayoutOrder = 100
+    linkInput.Size = UDim2.new(1, 0, 0, 32)
+    linkInput.BackgroundColor3 = SUB
+    linkInput.BorderSizePixel = 0
+    linkInput.ClearTextOnFocus = false
+    linkInput.Font = FONT
+    linkInput.TextSize = 11
+    linkInput.TextColor3 = TEXT
+    linkInput.PlaceholderText = "Paste Creator Store model link..."
+    linkInput.PlaceholderColor3 = DIM
+    linkInput.TextXAlignment = Enum.TextXAlignment.Left
+    linkInput.Text = ""
+    linkInput.Parent = loadModelModule.settingsFrame
+    corner(linkInput, 6)
+    do
+        local pad = Instance.new("UIPadding")
+        pad.PaddingLeft = UDim.new(0, 8)
+        pad.PaddingRight = UDim.new(0, 8)
+        pad.Parent = linkInput
+    end
+
+    -- Load button.
+    local loadButton = Instance.new("TextButton")
+    loadButton.Name = "LoadModelButton"
+    loadButton.LayoutOrder = 101
+    loadButton.Size = UDim2.new(1, 0, 0, 32)
+    styleButton(loadButton)
+    loadButton.Text = "   Load Model"
+    loadButton.TextColor3 = accent
+    loadButton.Parent = loadModelModule.settingsFrame
+
+    -- Status label.
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Name = "Status"
+    statusLabel.LayoutOrder = 102
+    statusLabel.Size = UDim2.new(1, 0, 0, 40)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.Font = FONT
+    statusLabel.TextSize = 10
+    statusLabel.TextWrapped = true
+    statusLabel.TextColor3 = DIM
+    statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+    statusLabel.Text = "Paste a link and click Load Model."
+    statusLabel.Parent = loadModelModule.settingsFrame
+
+    loadButton.MouseButton1Click:Connect(function()
+        if not loadModelModule.enabled then
+            statusLabel.Text = "Enable the module first."
+            return
+        end
+
+        local assetId = extractAssetId(linkInput.Text)
+        if not assetId then
+            statusLabel.Text = "❌ Could not find an Asset ID in the pasted link."
+            return
+        end
+
+        statusLabel.Text = "⏳ Loading asset ID: " .. assetId .. "..."
+        loadButton.Text = "   Loading..."
+        loadButton.TextColor3 = DIM
+
+        task.spawn(function()
+            local loadedInstance, err = tryInsertService(assetId)
+            if not loadedInstance then
+                loadedInstance, err = tryGetObjects(assetId)
+            end
+
+            loadButton.Text = "   Load Model"
+            loadButton.TextColor3 = accent
+
+            if not loadedInstance then
+                statusLabel.Text = "❌ Failed to load. The asset may be private, a package, or not a free model. (" .. tostring(err) .. ")"
+                return
+            end
+
+            local finalModel = prepareModel(loadedInstance)
+            if not finalModel then
+                if loadedInstance.Destroy then loadedInstance:Destroy() end
+                statusLabel.Text = "❌ Asset loaded, but it did not contain a usable Model."
+                return
+            end
+
+            -- Remove the previous loaded model.
+            for _, child in ipairs(modelFolder:GetChildren()) do
+                child:Destroy()
+            end
+
+            finalModel.Parent = modelFolder
+            local character = player.Character
+            local rootPart = character and character:FindFirstChild("HumanoidRootPart")
+            local placed = false
+            if rootPart then
+                placed = pcall(function()
+                    finalModel:PivotTo(rootPart.CFrame * CFrame.new(0, 2, -15))
+                end)
+            end
+            if not placed then
+                pcall(function() finalModel:PivotTo(CFrame.new(0, 5, -15)) end)
+            end
+
+            statusLabel.Text = "✅ Loaded model: " .. finalModel.Name
+        end)
+    end)
+
+    visualModules.loadModelFromLink = loadModelModule
+    visualModules.loadModelFolder = modelFolder
+    visualModules.cleanupLoadModel = function()
+        if modelFolder and modelFolder.Parent then
+            for _, child in ipairs(modelFolder:GetChildren()) do
+                child:Destroy()
+            end
+            modelFolder:Destroy()
+        end
+    end
+end)()
 print("TrueSight loaded with menu hidden. Press " .. keyUiState.menuKey.Name .. " to open/close it.")
